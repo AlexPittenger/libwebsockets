@@ -227,12 +227,20 @@ lws_uv_finalize_pt(struct lws_context_per_thread *pt)
 			return 1;
 		}
 	} else
-		lwsl_debug("%s: still %d undestroyed\n", __func__, pt->context->undestroyed_threads);
+		lwsl_debug("%s: still %d undestroyed\n", __func__,
+				pt->context->undestroyed_threads);
 
 	lws_context_unlock(pt->context);
 
 	return 0;
 }
+
+// static void lws_uv_walk_cb(uv_handle_t *handle, void *arg)
+// {
+//      if (!uv_is_closing(handle))
+//	      lwsl_err("%s: handle %p still alive on loop\n", __func__, handle);
+// }
+
 
 static const int sigs[] = { SIGINT, SIGTERM, SIGSEGV, SIGFPE, SIGHUP };
 
@@ -262,6 +270,13 @@ lws_uv_close_cb_sa(uv_handle_t *handle)
 		return;
 
 	/*
+	 * So we believe nothing of ours left on the loop.  Let's sanity
+	 * check it to count what's still on the loop
+	 */
+
+	// uv_walk(pt_to_priv_uv(pt)->io_loop, lws_uv_walk_cb, NULL);
+
+	/*
 	 * That's it... all wsi were down, and now every
 	 * static asset lws had a UV handle for is down.
 	 *
@@ -269,9 +284,6 @@ lws_uv_close_cb_sa(uv_handle_t *handle)
 	 */
 
 	lwsl_info("%s: thr %d: seen final static handle gone\n", __func__, tsi);
-
-	if (ptpriv->io_loop && !pt->event_loop_foreign)
-		uv_stop(pt_to_priv_uv(pt)->io_loop);
 
 	if (!pt->event_loop_foreign) {
 		lwsl_info("%s: calling lws_context_destroy2\n", __func__);
@@ -308,32 +320,12 @@ lws_libuv_static_refcount_del(uv_handle_t *h)
 	lws_uv_close_cb_sa(h);
 }
 
-
-static void lws_uv_close_cb(uv_handle_t *handle)
-{
-}
-
-static void lws_uv_walk_cb(uv_handle_t *handle, void *arg)
-{
-	if (!uv_is_closing(handle))
-		uv_close(handle, lws_uv_close_cb);
-}
-
-void
-lws_close_all_handles_in_loop(uv_loop_t *loop)
-{
-	uv_walk(loop, lws_uv_walk_cb, NULL);
-}
-
-
 void
 lws_libuv_stop_without_kill(const struct lws_context *context, int tsi)
 {
 	if (pt_to_priv_uv(&context->pt[tsi])->io_loop)
 		uv_stop(pt_to_priv_uv(&context->pt[tsi])->io_loop);
 }
-
-
 
 uv_loop_t *
 lws_uv_getloop(struct lws_context *context, int tsi)
@@ -623,16 +615,22 @@ static void
 elops_destroy_pt_uv(struct lws_context *context, int tsi)
 {
 	struct lws_context_per_thread *pt = &context->pt[tsi];
+	struct lws_pt_eventlibs_libuv *ptpriv = pt_to_priv_uv(pt);
 	int m, ns;
 
 	if (!lws_check_opt(context->options, LWS_SERVER_OPTION_LIBUV))
 		return;
 
-	if (!pt_to_priv_uv(pt)->io_loop)
+	if (!ptpriv->io_loop)
 		return;
 
-	if (pt->event_loop_destroy_processing_done)
+	if (pt->event_loop_destroy_processing_done) {
+		if (!pt->event_loop_foreign) {
+			lwsl_warn("%s: stopping event loop\n", __func__);
+			uv_stop(pt_to_priv_uv(pt)->io_loop);
+		}
 		return;
+	}
 
 	pt->event_loop_destroy_processing_done = 1;
 	lwsl_debug("%s: %d\n", __func__, tsi);
